@@ -1,0 +1,12 @@
+[package]
+name = "screenout"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "screenout"
+path = "src/lib.rs"
+
+[[bin]]
+name = "screenout"
+path = "src/main.rs"
