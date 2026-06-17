@@ -11,6 +11,7 @@ fn explicit_pid_outside_tmux_creates_and_attaches_to_session() {
         inside_tmux: false,
         current_tty: None,
         current_tmux_session: None,
+        ssh_destination: None,
     };
 
     let plan = build_plan(&options, &[]).expect("plan");
@@ -23,7 +24,12 @@ fn explicit_pid_outside_tmux_creates_and_attaches_to_session() {
             CommandStep::new("tmux", ["attach-session", "-t", "work"]),
         ]
     );
-    assert_eq!(plan.handoff_command, "tmux attach-session -t work");
+    assert_eq!(plan.local_handoff_command, "tmux attach-session -t work");
+    assert_eq!(
+        plan.clipboard_handoff_command,
+        "tmux attach-session -t work"
+    );
+    assert_eq!(plan.ssh_handoff_command, None);
     assert_eq!(
         build_execution_actions(&plan),
         vec![
@@ -39,6 +45,67 @@ fn explicit_pid_outside_tmux_creates_and_attaches_to_session() {
 }
 
 #[test]
+fn explicit_pid_with_ssh_destination_builds_ssh_handoff() {
+    let options = Options {
+        pid: Some(4242),
+        session: Some("work".to_string()),
+        inside_tmux: false,
+        current_tty: None,
+        current_tmux_session: None,
+        ssh_destination: Some("prod-box".to_string()),
+    };
+
+    let plan = build_plan(&options, &[]).expect("plan");
+
+    assert_eq!(plan.local_handoff_command, "tmux attach-session -t work");
+    assert_eq!(
+        plan.ssh_handoff_command,
+        Some("ssh prod-box -t 'tmux attach-session -t work'".to_string())
+    );
+    assert_eq!(
+        plan.clipboard_handoff_command,
+        "ssh prod-box -t 'tmux attach-session -t work'"
+    );
+    assert_eq!(
+        build_execution_actions(&plan),
+        vec![
+            ExecutionAction::Run(CommandStep::new(
+                "tmux",
+                ["new-session", "-d", "-s", "work", "reptyr 4242"]
+            )),
+            ExecutionAction::Run(CommandStep::new("kill", ["-CONT", "4242"])),
+            ExecutionAction::CopyHandoff(
+                "ssh prod-box -t 'tmux attach-session -t work'".to_string()
+            ),
+            ExecutionAction::Run(CommandStep::new("tmux", ["attach-session", "-t", "work"])),
+        ]
+    );
+}
+
+#[test]
+fn ssh_handoff_quotes_destination_and_nested_attach_command() {
+    let options = Options {
+        pid: Some(4242),
+        session: Some("build job".to_string()),
+        inside_tmux: false,
+        current_tty: None,
+        current_tmux_session: None,
+        ssh_destination: Some("user@example.com".to_string()),
+    };
+
+    let plan = build_plan(&options, &[]).expect("plan");
+
+    assert_eq!(
+        plan.local_handoff_command,
+        "tmux attach-session -t 'build job'"
+    );
+    assert_eq!(
+        plan.ssh_handoff_command,
+        Some("ssh user@example.com -t 'tmux attach-session -t '\\''build job'\\'''".to_string())
+    );
+}
+
+#[test]
 fn explicit_pid_inside_tmux_splits_current_session() {
     let options = Options {
         pid: Some(4242),
@@ -46,6 +113,7 @@ fn explicit_pid_inside_tmux_splits_current_session() {
         inside_tmux: true,
         current_tty: None,
         current_tmux_session: Some("main".to_string()),
+        ssh_destination: None,
     };
 
     let plan = build_plan(&options, &[]).expect("plan");
@@ -57,7 +125,12 @@ fn explicit_pid_inside_tmux_splits_current_session() {
             CommandStep::new("kill", ["-CONT", "4242"]),
         ]
     );
-    assert_eq!(plan.handoff_command, "tmux attach-session -t main");
+    assert_eq!(plan.local_handoff_command, "tmux attach-session -t main");
+    assert_eq!(
+        plan.clipboard_handoff_command,
+        "tmux attach-session -t main"
+    );
+    assert_eq!(plan.ssh_handoff_command, None);
     assert_eq!(
         build_execution_actions(&plan),
         vec![
@@ -76,6 +149,7 @@ fn inside_tmux_requires_current_session_for_handoff() {
         inside_tmux: true,
         current_tty: None,
         current_tmux_session: None,
+        ssh_destination: None,
     };
 
     let error = build_plan(&options, &[]).expect_err("missing tmux session");
@@ -136,6 +210,7 @@ fn automatic_pid_uses_supplied_current_tty() {
         inside_tmux: false,
         current_tty: Some("ttys003".to_string()),
         current_tmux_session: None,
+        ssh_destination: None,
     };
     let rows = vec![
         ProcessRow::new(1111, 1000, "T", "ttys003", "vim"),
@@ -157,9 +232,14 @@ fn automatic_pid_uses_supplied_current_tty() {
         ]
     );
     assert_eq!(
-        plan.handoff_command,
+        plan.local_handoff_command,
         "tmux attach-session -t screenout-1111"
     );
+    assert_eq!(
+        plan.clipboard_handoff_command,
+        "tmux attach-session -t screenout-1111"
+    );
+    assert_eq!(plan.ssh_handoff_command, None);
 }
 
 #[test]

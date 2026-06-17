@@ -10,12 +10,25 @@ pub struct Options {
     pub inside_tmux: bool,
     pub current_tty: Option<String>,
     pub current_tmux_session: Option<String>,
+    pub ssh_destination: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliArgs {
+    pub pid: Option<u32>,
+    pub session: Option<String>,
+    pub ssh_destination: Option<String>,
+    pub dry_run: bool,
+    pub help: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub target_pid: u32,
-    pub handoff_command: String,
+    pub tmux_session_name: String,
+    pub local_handoff_command: String,
+    pub ssh_handoff_command: Option<String>,
+    pub clipboard_handoff_command: String,
     pub steps: Vec<CommandStep>,
 }
 
@@ -63,6 +76,58 @@ impl ProcessRow {
             command: command.to_string(),
         }
     }
+}
+
+pub fn parse_args<I, S>(args: I) -> Result<CliArgs, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut parsed = CliArgs {
+        pid: None,
+        session: None,
+        ssh_destination: None,
+        dry_run: false,
+        help: false,
+    };
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_ref() {
+            "--pid" | "-p" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--pid requires a process id".to_string())?;
+                parsed.pid = Some(
+                    value
+                        .as_ref()
+                        .parse()
+                        .map_err(|_| format!("invalid process id: {}", value.as_ref()))?,
+                );
+            }
+            "--session" | "-s" => {
+                parsed.session = Some(
+                    args.next()
+                        .ok_or_else(|| "--session requires a name".to_string())?
+                        .as_ref()
+                        .to_string(),
+                );
+            }
+            "--ssh" => {
+                parsed.ssh_destination = Some(
+                    args.next()
+                        .ok_or_else(|| "--ssh requires a destination".to_string())?
+                        .as_ref()
+                        .to_string(),
+                );
+            }
+            "--dry-run" => parsed.dry_run = true,
+            "--help" | "-h" => parsed.help = true,
+            unknown => return Err(format!("unknown argument: {unknown}")),
+        }
+    }
+
+    Ok(parsed)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,16 +203,45 @@ pub fn build_plan(options: &Options, processes: &[ProcessRow]) -> Result<Plan, P
         ];
         (session, steps)
     };
-    let handoff_command = shell_words(&CommandStep::new(
+    let local_handoff_command = shell_words(&CommandStep::new(
         "tmux",
         ["attach-session", "-t", handoff_session.as_str()],
     ));
+    let ssh_handoff_command = options.ssh_destination.as_ref().map(|destination| {
+        shell_words(&CommandStep::new(
+            "ssh",
+            [destination.as_str(), "-t", local_handoff_command.as_str()],
+        ))
+    });
+    let clipboard_handoff_command = ssh_handoff_command
+        .clone()
+        .unwrap_or_else(|| local_handoff_command.clone());
 
     Ok(Plan {
         target_pid,
-        handoff_command,
+        tmux_session_name: handoff_session,
+        local_handoff_command,
+        ssh_handoff_command,
+        clipboard_handoff_command,
         steps,
     })
+}
+
+pub fn format_success_message(plan: &Plan) -> String {
+    let mut message = format!(
+        "screenout: moved PID {} into tmux session {}\n\
+         screenout: attach command:\n\
+         {}\n",
+        plan.target_pid, plan.tmux_session_name, plan.local_handoff_command
+    );
+
+    if let Some(ssh_handoff) = &plan.ssh_handoff_command {
+        message.push_str("screenout: ssh handoff:\n");
+        message.push_str(ssh_handoff);
+        message.push('\n');
+    }
+
+    message
 }
 
 pub fn choose_target(
@@ -266,14 +360,18 @@ pub fn build_execution_actions(plan: &Plan) -> Vec<ExecutionAction> {
 
     for step in &plan.steps {
         if is_tmux_attach_step(step) && !copied {
-            actions.push(ExecutionAction::CopyHandoff(plan.handoff_command.clone()));
+            actions.push(ExecutionAction::CopyHandoff(
+                plan.clipboard_handoff_command.clone(),
+            ));
             copied = true;
         }
         actions.push(ExecutionAction::Run(step.clone()));
     }
 
     if !copied {
-        actions.push(ExecutionAction::CopyHandoff(plan.handoff_command.clone()));
+        actions.push(ExecutionAction::CopyHandoff(
+            plan.clipboard_handoff_command.clone(),
+        ));
     }
 
     actions
@@ -346,7 +444,7 @@ pub fn shell_words(step: &CommandStep) -> String {
 fn shell_quote(value: &str) -> String {
     if value
         .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || "-_./:=".contains(ch))
+        .all(|ch| ch.is_ascii_alphanumeric() || "-_./:=@".contains(ch))
     {
         value.to_string()
     } else {
