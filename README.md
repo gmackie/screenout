@@ -89,3 +89,7 @@ distribution's `reptyr` guidance before changing kernel security settings.
 ```sh
 cargo install --path .
 ```
+
+## License
+
+MIT
