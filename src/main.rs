@@ -1,6 +1,7 @@
 use screenout::{
-    build_plan, current_tmux_session_name, current_tty_name, format_success_message,
-    missing_dependencies, parse_args, read_current_tty_processes, run_plan, Options,
+    build_plan, current_tmux_session_name, current_tty_name, detect_terminal_size,
+    format_success_message, missing_dependencies, parse_args, read_current_tty_processes, run_plan,
+    Options, TermSize,
 };
 
 fn main() {
@@ -33,6 +34,10 @@ fn real_main() -> Result<(), String> {
     } else {
         Vec::new()
     };
+    let size = args
+        .size
+        .or_else(detect_terminal_size)
+        .unwrap_or(TermSize::DEFAULT);
     let plan = build_plan(
         &Options {
             pid: args.pid,
@@ -41,6 +46,9 @@ fn real_main() -> Result<(), String> {
             current_tty,
             current_tmux_session,
             ssh_destination: args.ssh_destination,
+            command: args.command,
+            attach: args.attach,
+            size,
         },
         &processes,
     )

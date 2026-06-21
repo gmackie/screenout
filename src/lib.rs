@@ -60,6 +60,9 @@ pub struct Options {
     pub current_tty: Option<String>,
     pub current_tmux_session: Option<String>,
     pub ssh_destination: Option<String>,
+    pub command: Option<Vec<String>>,
+    pub attach: bool,
+    pub size: TermSize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,11 +79,13 @@ pub struct CliArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    pub target_pid: u32,
+    pub headline: String,
     pub tmux_session_name: String,
     pub local_handoff_command: String,
     pub ssh_handoff_command: Option<String>,
     pub clipboard_handoff_command: String,
+    pub agent_capture_command: String,
+    pub agent_send_keys_command: String,
     pub steps: Vec<CommandStep>,
 }
 
@@ -212,6 +217,7 @@ pub enum PlanError {
     AmbiguousTargets(Vec<u32>),
     InvalidPsRow(String),
     MissingTmuxSession,
+    EmptyCommand,
 }
 
 impl fmt::Display for PlanError {
@@ -236,6 +242,7 @@ impl fmt::Display for PlanError {
                 f,
                 "could not determine current tmux session for handoff command"
             ),
+            PlanError::EmptyCommand => write!(f, "no command supplied to launch"),
         }
     }
 }
@@ -243,42 +250,85 @@ impl fmt::Display for PlanError {
 impl std::error::Error for PlanError {}
 
 pub fn build_plan(options: &Options, processes: &[ProcessRow]) -> Result<Plan, PlanError> {
-    let target_pid = match options.pid {
-        Some(pid) => pid,
-        None => choose_target(
-            processes,
-            options.current_tty.as_deref().unwrap_or(""),
-            std::process::id(),
-        )?,
-    };
+    let TermSize { cols, lines } = options.size;
 
-    let reptyr = format!("reptyr {target_pid}");
-    let continue_target = target_pid.to_string();
-    let (handoff_session, steps) = if options.inside_tmux {
-        let handoff_session = options
+    // Resolve the inner command, a human subject for the headline, and (for
+    // rescue) the chosen pid. Binding the pid once means the inner string and
+    // the kill steps share it even when it came from `choose_target`.
+    let (inner, subject, rescue_pid): (String, String, Option<u32>) = match &options.command {
+        Some(command) => {
+            if command.is_empty() {
+                return Err(PlanError::EmptyCommand);
+            }
+            (shell_join(command), session_fragment(&command[0]), None)
+        }
+        None => {
+            let pid = match options.pid {
+                Some(pid) => pid,
+                None => choose_target(
+                    processes,
+                    options.current_tty.as_deref().unwrap_or(""),
+                    std::process::id(),
+                )?,
+            };
+            (format!("reptyr {pid}"), format!("PID {pid}"), Some(pid))
+        }
+    };
+    let is_rescue = rescue_pid.is_some();
+
+    let cols_s = cols.to_string();
+    let lines_s = lines.to_string();
+
+    let (handoff_session, create_step) = if options.inside_tmux {
+        let session = options
             .current_tmux_session
             .clone()
             .ok_or(PlanError::MissingTmuxSession)?;
-        let steps = vec![
-            CommandStep::new("tmux", ["split-window", reptyr.as_str()]),
-            CommandStep::new("kill", ["-CONT", continue_target.as_str()]),
-        ];
-        (handoff_session, steps)
+        let create = CommandStep::new(
+            "tmux",
+            ["new-window", "-P", "-F", "#{pane_id}", inner.as_str()],
+        );
+        (session, create)
     } else {
-        let session = options
-            .session
-            .clone()
-            .unwrap_or_else(|| format!("screenout-{target_pid}"));
-        let steps = vec![
-            CommandStep::new(
-                "tmux",
-                ["new-session", "-d", "-s", session.as_str(), reptyr.as_str()],
-            ),
-            CommandStep::new("kill", ["-CONT", continue_target.as_str()]),
-            CommandStep::new("tmux", ["attach-session", "-t", session.as_str()]),
-        ];
-        (session, steps)
+        let default_session = match rescue_pid {
+            Some(pid) => format!("screenout-{pid}"),
+            None => format!("screenout-{subject}"),
+        };
+        let session = options.session.clone().unwrap_or(default_session);
+        let create = CommandStep::new(
+            "tmux",
+            [
+                "new-session",
+                "-d",
+                "-x",
+                cols_s.as_str(),
+                "-y",
+                lines_s.as_str(),
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-s",
+                session.as_str(),
+                inner.as_str(),
+            ],
+        );
+        (session, create)
     };
+
+    let mut steps = vec![create_step];
+    if let Some(pid) = rescue_pid {
+        let pid_s = pid.to_string();
+        steps.push(CommandStep::new("kill", ["-CONT", pid_s.as_str()]));
+        steps.push(CommandStep::new("kill", ["-WINCH", pid_s.as_str()]));
+    }
+    let should_attach = !options.inside_tmux && (is_rescue || options.attach);
+    if should_attach {
+        steps.push(CommandStep::new(
+            "tmux",
+            ["attach-session", "-t", handoff_session.as_str()],
+        ));
+    }
+
     let local_handoff_command = shell_words(&CommandStep::new(
         "tmux",
         ["attach-session", "-t", handoff_session.as_str()],
@@ -293,22 +343,35 @@ pub fn build_plan(options: &Options, processes: &[ProcessRow]) -> Result<Plan, P
         .clone()
         .unwrap_or_else(|| local_handoff_command.clone());
 
+    let headline = match (&options.command, options.inside_tmux) {
+        (Some(_), false) => format!("launched {subject} in tmux session {handoff_session}"),
+        (Some(_), true) => {
+            format!("launched {subject} in a new tmux window (session {handoff_session})")
+        }
+        (None, false) => format!("moved {subject} into tmux session {handoff_session}"),
+        (None, true) => {
+            format!("moved {subject} into a new tmux window (session {handoff_session})")
+        }
+    };
+
     Ok(Plan {
-        target_pid,
+        headline,
         tmux_session_name: handoff_session,
         local_handoff_command,
         ssh_handoff_command,
         clipboard_handoff_command,
+        agent_capture_command: "tmux capture-pane -p -t {pane}".to_string(),
+        agent_send_keys_command: "tmux send-keys -t {pane} 'q' Enter".to_string(),
         steps,
     })
 }
 
 pub fn format_success_message(plan: &Plan) -> String {
     let mut message = format!(
-        "screenout: moved PID {} into tmux session {}\n\
+        "screenout: {}\n\
          screenout: attach command:\n\
          {}\n",
-        plan.target_pid, plan.tmux_session_name, plan.local_handoff_command
+        plan.headline, plan.local_handoff_command
     );
 
     if let Some(ssh_handoff) = &plan.ssh_handoff_command {
@@ -515,6 +578,36 @@ pub fn shell_words(step: &CommandStep) -> String {
         .map(shell_quote)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Join an argv into a single shell-safe command string for tmux to run.
+pub fn shell_join(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|p| shell_quote(p))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Derive a tmux-safe session name fragment from a command's program name.
+fn session_fragment(program: &str) -> String {
+    let base = program.rsplit('/').next().unwrap_or(program);
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    if trimmed.is_empty() {
+        "job".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn shell_quote(value: &str) -> String {

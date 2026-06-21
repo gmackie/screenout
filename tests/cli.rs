@@ -119,11 +119,13 @@ fn rejects_attach_without_launch_command() {
 #[test]
 fn formats_success_message_with_local_handoff_only() {
     let plan = Plan {
-        target_pid: 4242,
+        headline: "moved PID 4242 into tmux session work".to_string(),
         tmux_session_name: "work".to_string(),
         local_handoff_command: "tmux attach-session -t work".to_string(),
         ssh_handoff_command: None,
         clipboard_handoff_command: "tmux attach-session -t work".to_string(),
+        agent_capture_command: "tmux capture-pane -p -t {pane}".to_string(),
+        agent_send_keys_command: "tmux send-keys -t {pane} 'q' Enter".to_string(),
         steps: vec![],
     };
 
@@ -138,11 +140,13 @@ fn formats_success_message_with_local_handoff_only() {
 #[test]
 fn formats_success_message_with_ssh_handoff() {
     let plan = Plan {
-        target_pid: 4242,
+        headline: "moved PID 4242 into tmux session work".to_string(),
         tmux_session_name: "work".to_string(),
         local_handoff_command: "tmux attach-session -t work".to_string(),
         ssh_handoff_command: Some("ssh prod-box -t 'tmux attach-session -t work'".to_string()),
         clipboard_handoff_command: "ssh prod-box -t 'tmux attach-session -t work'".to_string(),
+        agent_capture_command: "tmux capture-pane -p -t {pane}".to_string(),
+        agent_send_keys_command: "tmux send-keys -t {pane} 'q' Enter".to_string(),
         steps: vec![],
     };
 
