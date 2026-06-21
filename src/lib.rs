@@ -366,12 +366,22 @@ pub fn build_plan(options: &Options, processes: &[ProcessRow]) -> Result<Plan, P
     })
 }
 
-pub fn format_success_message(plan: &Plan) -> String {
+pub fn format_success_message(plan: &Plan, pane: Option<&str>) -> String {
+    let substitute = |s: &str| match pane {
+        Some(pane) => s.replace("{pane}", pane),
+        None => s.to_string(),
+    };
     let mut message = format!(
         "screenout: {}\n\
          screenout: attach command:\n\
+         {}\n\
+         screenout: agent commands:\n\
+         {}\n\
          {}\n",
-        plan.headline, plan.local_handoff_command
+        plan.headline,
+        plan.local_handoff_command,
+        substitute(&plan.agent_capture_command),
+        substitute(&plan.agent_send_keys_command),
     );
 
     if let Some(ssh_handoff) = &plan.ssh_handoff_command {
@@ -460,8 +470,17 @@ pub fn read_current_tty_processes(tty: &str) -> Result<Vec<ProcessRow>, PlanErro
     parse_ps_rows(&String::from_utf8_lossy(&output.stdout))
 }
 
-pub fn run_plan(plan: &Plan, dry_run: bool) -> Result<(), String> {
+fn is_create_step(step: &CommandStep) -> bool {
+    step.program == "tmux"
+        && matches!(
+            step.args.first().map(String::as_str),
+            Some("new-session") | Some("new-window")
+        )
+}
+
+pub fn run_plan(plan: &Plan, dry_run: bool) -> Result<Option<String>, String> {
     let path = std::env::var("PATH").unwrap_or_default();
+    let mut pane_id: Option<String> = None;
     for action in build_execution_actions(plan) {
         match action {
             ExecutionAction::Run(step) => {
@@ -469,13 +488,26 @@ pub fn run_plan(plan: &Plan, dry_run: bool) -> Result<(), String> {
                     println!("{}", shell_words(&step));
                     continue;
                 }
-
-                let status = Command::new(&step.program)
-                    .args(&step.args)
-                    .status()
-                    .map_err(|error| format!("failed to run {}: {error}", step.program))?;
-                if !status.success() {
-                    return Err(format!("{} exited with {status}", step.program));
+                if is_create_step(&step) {
+                    let output = Command::new(&step.program)
+                        .args(&step.args)
+                        .output()
+                        .map_err(|error| format!("failed to run {}: {error}", step.program))?;
+                    if !output.status.success() {
+                        return Err(format!("{} exited with {}", step.program, output.status));
+                    }
+                    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !id.is_empty() {
+                        pane_id = Some(id);
+                    }
+                } else {
+                    let status = Command::new(&step.program)
+                        .args(&step.args)
+                        .status()
+                        .map_err(|error| format!("failed to run {}: {error}", step.program))?;
+                    if !status.success() {
+                        return Err(format!("{} exited with {status}", step.program));
+                    }
                 }
             }
             ExecutionAction::CopyHandoff(text) => {
@@ -490,7 +522,7 @@ pub fn run_plan(plan: &Plan, dry_run: bool) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    Ok(pane_id)
 }
 
 pub fn build_execution_actions(plan: &Plan) -> Vec<ExecutionAction> {

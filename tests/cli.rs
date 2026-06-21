@@ -130,10 +130,13 @@ fn formats_success_message_with_local_handoff_only() {
     };
 
     assert_eq!(
-        format_success_message(&plan),
+        format_success_message(&plan, None),
         "screenout: moved PID 4242 into tmux session work\n\
          screenout: attach command:\n\
-         tmux attach-session -t work\n"
+         tmux attach-session -t work\n\
+         screenout: agent commands:\n\
+         tmux capture-pane -p -t {pane}\n\
+         tmux send-keys -t {pane} 'q' Enter\n"
     );
 }
 
@@ -151,11 +154,58 @@ fn formats_success_message_with_ssh_handoff() {
     };
 
     assert_eq!(
-        format_success_message(&plan),
+        format_success_message(&plan, None),
         "screenout: moved PID 4242 into tmux session work\n\
          screenout: attach command:\n\
          tmux attach-session -t work\n\
+         screenout: agent commands:\n\
+         tmux capture-pane -p -t {pane}\n\
+         tmux send-keys -t {pane} 'q' Enter\n\
          screenout: ssh handoff:\n\
          ssh prod-box -t 'tmux attach-session -t work'\n"
     );
+}
+
+#[test]
+fn success_message_includes_agent_block_with_substituted_pane() {
+    let plan = Plan {
+        headline: "launched htop in tmux session w".to_string(),
+        tmux_session_name: "w".to_string(),
+        local_handoff_command: "tmux attach-session -t w".to_string(),
+        ssh_handoff_command: None,
+        clipboard_handoff_command: "tmux attach-session -t w".to_string(),
+        agent_capture_command: "tmux capture-pane -p -t {pane}".to_string(),
+        agent_send_keys_command: "tmux send-keys -t {pane} 'q' Enter".to_string(),
+        steps: vec![],
+    };
+
+    let message = format_success_message(&plan, Some("%3"));
+
+    assert_eq!(
+        message,
+        "screenout: launched htop in tmux session w\n\
+         screenout: attach command:\n\
+         tmux attach-session -t w\n\
+         screenout: agent commands:\n\
+         tmux capture-pane -p -t %3\n\
+         tmux send-keys -t %3 'q' Enter\n"
+    );
+}
+
+#[test]
+fn success_message_keeps_placeholder_without_pane() {
+    let plan = Plan {
+        headline: "launched htop in tmux session w".to_string(),
+        tmux_session_name: "w".to_string(),
+        local_handoff_command: "tmux attach-session -t w".to_string(),
+        ssh_handoff_command: Some("ssh box -t 'tmux attach-session -t w'".to_string()),
+        clipboard_handoff_command: "ssh box -t 'tmux attach-session -t w'".to_string(),
+        agent_capture_command: "tmux capture-pane -p -t {pane}".to_string(),
+        agent_send_keys_command: "tmux send-keys -t {pane} 'q' Enter".to_string(),
+        steps: vec![],
+    };
+
+    let message = format_success_message(&plan, None);
+    assert!(message.contains("tmux capture-pane -p -t {pane}"));
+    assert!(message.contains("screenout: ssh handoff:\n"));
 }

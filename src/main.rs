@@ -65,8 +65,8 @@ fn real_main() -> Result<(), String> {
         }
     }
 
-    run_plan(&plan, args.dry_run)?;
-    print!("{}", format_success_message(&plan));
+    let pane_id = run_plan(&plan, args.dry_run)?;
+    print!("{}", format_success_message(&plan, pane_id.as_deref()));
     Ok(())
 }
 
