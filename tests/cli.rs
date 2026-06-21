@@ -1,5 +1,23 @@
 use screenout::{format_success_message, parse_args, parse_size, Plan, TermSize};
 
+use screenout::parse_stty_size;
+
+#[test]
+fn parses_stty_size_lines_then_cols() {
+    // `stty size` prints "<lines> <cols>"
+    assert_eq!(
+        parse_stty_size("48 160\n"),
+        Some(TermSize { cols: 160, lines: 48 })
+    );
+}
+
+#[test]
+fn rejects_empty_or_partial_stty_size() {
+    assert_eq!(parse_stty_size(""), None);
+    assert_eq!(parse_stty_size("48"), None);
+    assert_eq!(parse_stty_size("0 0"), None);
+}
+
 #[test]
 fn parses_valid_size() {
     assert_eq!(parse_size("160x48"), Ok(TermSize { cols: 160, lines: 48 }));

@@ -27,6 +27,31 @@ pub fn parse_size(value: &str) -> Result<TermSize, String> {
     Ok(TermSize { cols, lines })
 }
 
+pub fn parse_stty_size(output: &str) -> Option<TermSize> {
+    let mut parts = output.split_whitespace();
+    let lines: u16 = parts.next()?.parse().ok()?;
+    let cols: u16 = parts.next()?.parse().ok()?;
+    if cols == 0 || lines == 0 {
+        return None;
+    }
+    Some(TermSize { cols, lines })
+}
+
+/// Best-effort current terminal size via `stty size` reading from /dev/tty.
+pub fn detect_terminal_size() -> Option<TermSize> {
+    use std::fs::File;
+    let tty = File::open("/dev/tty").ok()?;
+    let output = Command::new("stty")
+        .arg("size")
+        .stdin(Stdio::from(tty))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_stty_size(&String::from_utf8_lossy(&output.stdout))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub pid: Option<u32>,
