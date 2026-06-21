@@ -1,4 +1,25 @@
-use screenout::{format_success_message, parse_args, Plan};
+use screenout::{format_success_message, parse_args, parse_size, Plan, TermSize};
+
+#[test]
+fn parses_valid_size() {
+    assert_eq!(parse_size("160x48"), Ok(TermSize { cols: 160, lines: 48 }));
+}
+
+#[test]
+fn rejects_malformed_size() {
+    assert_eq!(
+        parse_size("80"),
+        Err("invalid --size value: 80 (expected COLSxLINES)".to_string())
+    );
+    assert_eq!(
+        parse_size("0x40"),
+        Err("invalid --size value: 0x40 (expected COLSxLINES)".to_string())
+    );
+    assert_eq!(
+        parse_size("axb"),
+        Err("invalid --size value: axb (expected COLSxLINES)".to_string())
+    );
+}
 
 #[test]
 fn parses_ssh_destination() {

@@ -3,6 +3,30 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TermSize {
+    pub cols: u16,
+    pub lines: u16,
+}
+
+impl TermSize {
+    pub const DEFAULT: TermSize = TermSize {
+        cols: 120,
+        lines: 40,
+    };
+}
+
+pub fn parse_size(value: &str) -> Result<TermSize, String> {
+    let invalid = || format!("invalid --size value: {value} (expected COLSxLINES)");
+    let (cols, lines) = value.split_once('x').ok_or_else(invalid)?;
+    let cols: u16 = cols.parse().map_err(|_| invalid())?;
+    let lines: u16 = lines.parse().map_err(|_| invalid())?;
+    if cols == 0 || lines == 0 {
+        return Err(invalid());
+    }
+    Ok(TermSize { cols, lines })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub pid: Option<u32>,
