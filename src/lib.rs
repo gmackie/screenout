@@ -67,6 +67,9 @@ pub struct CliArgs {
     pub pid: Option<u32>,
     pub session: Option<String>,
     pub ssh_destination: Option<String>,
+    pub command: Option<Vec<String>>,
+    pub attach: bool,
+    pub size: Option<TermSize>,
     pub dry_run: bool,
     pub help: bool,
 }
@@ -136,6 +139,9 @@ where
         pid: None,
         session: None,
         ssh_destination: None,
+        command: None,
+        attach: false,
+        size: None,
         dry_run: false,
         help: false,
     };
@@ -170,10 +176,31 @@ where
                         .to_string(),
                 );
             }
+            "--attach" => parsed.attach = true,
+            "--size" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--size requires a value".to_string())?;
+                parsed.size = Some(parse_size(value.as_ref())?);
+            }
+            "--" => {
+                let rest: Vec<String> = args.by_ref().map(|a| a.as_ref().to_string()).collect();
+                if rest.is_empty() {
+                    return Err("-- requires a command to launch".to_string());
+                }
+                parsed.command = Some(rest);
+            }
             "--dry-run" => parsed.dry_run = true,
             "--help" | "-h" => parsed.help = true,
             unknown => return Err(format!("unknown argument: {unknown}")),
         }
+    }
+
+    if parsed.command.is_some() && parsed.pid.is_some() {
+        return Err("--pid cannot be combined with a launch command".to_string());
+    }
+    if parsed.attach && parsed.command.is_none() {
+        return Err("--attach requires a launch command".to_string());
     }
 
     Ok(parsed)
