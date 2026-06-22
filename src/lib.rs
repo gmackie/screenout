@@ -361,6 +361,8 @@ pub fn build_plan(options: &Options, processes: &[ProcessRow]) -> Result<Plan, P
         ssh_handoff_command,
         clipboard_handoff_command,
         agent_capture_command: "tmux capture-pane -p -t {pane}".to_string(),
+        // `'q'` is an illustrative key, not an action screenout runs; it just
+        // shows an agent the send-keys shape for the captured pane.
         agent_send_keys_command: "tmux send-keys -t {pane} 'q' Enter".to_string(),
         steps,
     })
@@ -505,7 +507,15 @@ pub fn run_plan(plan: &Plan, dry_run: bool) -> Result<Option<String>, String> {
                         .output()
                         .map_err(|error| format!("failed to run {}: {error}", step.program))?;
                     if !output.status.success() {
-                        return Err(format!("{} exited with {}", step.program, output.status));
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let stderr = stderr.trim();
+                        if stderr.is_empty() {
+                            return Err(format!("{} exited with {}", step.program, output.status));
+                        }
+                        return Err(format!(
+                            "{} exited with {}: {stderr}",
+                            step.program, output.status
+                        ));
                     }
                     let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     if !id.is_empty() {
