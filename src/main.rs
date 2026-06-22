@@ -1,7 +1,7 @@
 use screenout::{
     build_plan, current_tmux_session_name, current_tty_name, detect_terminal_size,
     format_success_message, missing_dependencies, parse_args, read_current_tty_processes, run_plan,
-    Options, TermSize,
+    session_exists, Options, TermSize,
 };
 
 fn main() {
@@ -18,13 +18,16 @@ fn real_main() -> Result<(), String> {
         return Ok(());
     }
 
+    let is_launch = args.command.is_some();
     let inside_tmux = std::env::var_os("TMUX").is_some();
     let current_tmux_session = if inside_tmux {
         current_tmux_session_name()
     } else {
         None
     };
-    let current_tty = if args.pid.is_none() {
+
+    let needs_tty = !is_launch && args.pid.is_none();
+    let current_tty = if needs_tty {
         Some(current_tty_name().ok_or_else(|| "could not determine current tty".to_string())?)
     } else {
         None
@@ -34,10 +37,12 @@ fn real_main() -> Result<(), String> {
     } else {
         Vec::new()
     };
+
     let size = args
         .size
         .or_else(detect_terminal_size)
         .unwrap_or(TermSize::DEFAULT);
+
     let plan = build_plan(
         &Options {
             pid: args.pid,
@@ -56,11 +61,23 @@ fn real_main() -> Result<(), String> {
 
     if !args.dry_run {
         let path = std::env::var("PATH").unwrap_or_default();
-        let missing = missing_dependencies(&path, &["tmux", "reptyr", "kill"]);
+        let required: &[&str] = if is_launch {
+            &["tmux"]
+        } else {
+            &["tmux", "reptyr", "kill"]
+        };
+        let missing = missing_dependencies(&path, required);
         if !missing.is_empty() {
             return Err(format!(
                 "missing required command(s): {}",
                 missing.join(", ")
+            ));
+        }
+
+        if !inside_tmux && session_exists(&plan.tmux_session_name) {
+            return Err(format!(
+                "tmux session {} already exists; pass --session <name>",
+                plan.tmux_session_name
             ));
         }
     }
@@ -72,13 +89,18 @@ fn real_main() -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage: screenout [--pid PID] [--session NAME] [--ssh DESTINATION] [--dry-run]\n\n\
-         Move a stopped foreground job into tmux using reptyr.\n\n\
-         Workflow:\n\
-           1. Press Ctrl+Z in the terminal running the job.\n\
-           2. Run screenout, or screenout --pid PID if more than one job is stopped.\n\
-           3. Use --ssh DESTINATION to also print an SSH attach command.\n\
-           4. Share the copied tmux attach command with an agent.\n\
-           5. Detach from tmux later with Ctrl+b then d."
+        "Usage:\n\
+         \x20 screenout [--pid PID] [--session NAME] [--ssh DEST] [--size COLSxLINES] [--dry-run]\n\
+         \x20 screenout [--session NAME] [--ssh DEST] [--size COLSxLINES] [--attach] [--dry-run] -- CMD [ARGS...]\n\n\
+         Move a CLI tool (often a TUI) into tmux so a human and an agent can both drive it.\n\n\
+         Rescue an already-running job:\n\
+         \x20 1. Press Ctrl+Z to stop the foreground job.\n\
+         \x20 2. Run screenout (or screenout --pid PID if several jobs are stopped).\n\n\
+         Launch a fresh command into tmux (works on macOS; no reptyr):\n\
+         \x20 screenout -- htop\n\
+         \x20 screenout --attach -- top\n\n\
+         screenout prints a tmux attach command for humans and capture-pane/send-keys\n\
+         commands (targeting the pane id) for agents. Use --ssh DEST to also print an\n\
+         SSH attach wrapper. Detach from tmux with Ctrl+b then d."
     );
 }

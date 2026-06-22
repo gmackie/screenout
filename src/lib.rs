@@ -462,6 +462,17 @@ pub fn current_tmux_session_name() -> Option<String> {
         .filter(|session| !session.is_empty())
 }
 
+/// True if a tmux session with this name already exists.
+pub fn session_exists(name: &str) -> bool {
+    Command::new("tmux")
+        .args(["has-session", "-t", name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 pub fn read_current_tty_processes(tty: &str) -> Result<Vec<ProcessRow>, PlanError> {
     let output = Command::new("ps")
         .args(["-o", "pid=,ppid=,stat=,tty=,comm=", "-t", tty])
