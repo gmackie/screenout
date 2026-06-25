@@ -1,5 +1,8 @@
 # screenout
 
+[![CI](https://github.com/gmackie/screenout/actions/workflows/ci.yml/badge.svg)](https://github.com/gmackie/screenout/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 `screenout` moves a CLI tool — usually a TUI — into a tmux session so a human
 and an agent can both interact with it.
 
@@ -150,6 +153,18 @@ On some Linux systems, ptrace restrictions may block `reptyr`; follow your
 distribution's `reptyr` guidance before changing kernel security settings.
 
 ## Install
+
+Prebuilt binaries for Linux (gnu and musl) and macOS (Intel and Apple Silicon)
+are attached to each [release](https://github.com/gmackie/screenout/releases).
+Download the archive for your platform, extract `screenout`, and put it on your
+`PATH`:
+
+```sh
+tar -xzf screenout-x86_64-unknown-linux-gnu.tar.gz
+sudo mv screenout /usr/local/bin/
+```
+
+Or build from source with Cargo:
 
 ```sh
 cargo install --path .
