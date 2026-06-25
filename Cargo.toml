@@ -1,6 +1,6 @@
 [package]
 name = "screenout"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Rescue a stopped terminal job into tmux and print a handoff command for humans or agents."
 license = "MIT"
