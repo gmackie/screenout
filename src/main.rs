@@ -1,8 +1,10 @@
 use screenout::{
-    build_plan, current_tmux_session_name, current_tty_name, detect_terminal_size,
-    format_success_message, missing_dependencies, parse_args, read_current_tty_processes, run_plan,
-    session_exists, Options, TermSize,
+    attach_command, build_plan, current_tmux_session_name, current_tty_name, detect_terminal_size,
+    format_success_message, list_screenout_sessions, missing_dependencies, parse_args,
+    read_current_tty_processes, render_attach_info, render_session_list, resolve_attach_target,
+    run_plan, session_exists, CommandStep, Options, Subcommand, TermSize,
 };
+use std::process::Command;
 
 fn main() {
     if let Err(error) = real_main() {
@@ -16,6 +18,10 @@ fn real_main() -> Result<(), String> {
     if args.help {
         print_help();
         return Ok(());
+    }
+
+    if let Some(subcommand) = args.subcommand {
+        return run_subcommand(subcommand, args.dry_run);
     }
 
     let is_launch = args.command.is_some();
@@ -87,6 +93,44 @@ fn real_main() -> Result<(), String> {
     Ok(())
 }
 
+fn run_subcommand(subcommand: Subcommand, dry_run: bool) -> Result<(), String> {
+    let sessions = list_screenout_sessions();
+    match subcommand {
+        Subcommand::List => {
+            print!("{}", render_session_list(&sessions));
+            Ok(())
+        }
+        Subcommand::Attach(name) => {
+            let target = resolve_attach_target(&sessions, name.as_deref())?;
+            print!("{}", render_attach_info(&target));
+
+            if dry_run {
+                println!("{}", attach_command(&target.name));
+                return Ok(());
+            }
+
+            let path = std::env::var("PATH").unwrap_or_default();
+            let missing = missing_dependencies(&path, &["tmux"]);
+            if !missing.is_empty() {
+                return Err(format!(
+                    "missing required command(s): {}",
+                    missing.join(", ")
+                ));
+            }
+
+            let step = CommandStep::new("tmux", ["attach-session", "-t", target.name.as_str()]);
+            let status = Command::new(&step.program)
+                .args(&step.args)
+                .status()
+                .map_err(|error| format!("failed to run tmux: {error}"))?;
+            if !status.success() {
+                return Err(format!("tmux exited with {status}"));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn print_help() {
     println!(
         "Usage:\n\
@@ -99,6 +143,9 @@ fn print_help() {
          Launch a fresh command into tmux (works on macOS; no reptyr):\n\
          \x20 screenout -- htop\n\
          \x20 screenout --attach -- top\n\n\
+         Find and rejoin sessions later:\n\
+         \x20 screenout list            list active screenout sessions\n\
+         \x20 screenout attach [name]   reattach to a session\n\n\
          screenout prints a tmux attach command for humans and capture-pane/send-keys\n\
          commands (targeting the pane id) for agents. Use --ssh DEST to also print an\n\
          SSH attach wrapper. Detach from tmux with Ctrl+b then d."

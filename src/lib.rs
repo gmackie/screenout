@@ -66,6 +66,14 @@ pub struct Options {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Subcommand {
+    /// `screenout list` — show active screenout sessions.
+    List,
+    /// `screenout attach [name]` — reattach to a screenout session.
+    Attach(Option<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliArgs {
     pub pid: Option<u32>,
     pub session: Option<String>,
@@ -75,6 +83,7 @@ pub struct CliArgs {
     pub size: Option<TermSize>,
     pub dry_run: bool,
     pub help: bool,
+    pub subcommand: Option<Subcommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +149,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    let tokens: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
     let mut parsed = CliArgs {
         pid: None,
         session: None,
@@ -149,36 +159,70 @@ where
         size: None,
         dry_run: false,
         help: false,
+        subcommand: None,
     };
-    let mut args = args.into_iter();
 
+    // A leading verb selects a subcommand; otherwise fall through to the
+    // default rescue/launch flag grammar.
+    if let Some(first) = tokens.first() {
+        match first.as_str() {
+            "list" | "ls" => {
+                for token in &tokens[1..] {
+                    match token.as_str() {
+                        "--help" | "-h" => parsed.help = true,
+                        other => return Err(format!("unknown argument: {other}")),
+                    }
+                }
+                parsed.subcommand = Some(Subcommand::List);
+                return Ok(parsed);
+            }
+            "attach" => {
+                let mut name = None;
+                for token in &tokens[1..] {
+                    match token.as_str() {
+                        "--help" | "-h" => parsed.help = true,
+                        "--dry-run" => parsed.dry_run = true,
+                        other if other.starts_with('-') => {
+                            return Err(format!("unknown argument: {other}"))
+                        }
+                        other => {
+                            if name.is_some() {
+                                return Err("attach takes at most one session name".to_string());
+                            }
+                            name = Some(other.to_string());
+                        }
+                    }
+                }
+                parsed.subcommand = Some(Subcommand::Attach(name));
+                return Ok(parsed);
+            }
+            _ => {}
+        }
+    }
+
+    let mut args = tokens.into_iter();
     while let Some(arg) = args.next() {
-        match arg.as_ref() {
+        match arg.as_str() {
             "--pid" | "-p" => {
                 let value = args
                     .next()
                     .ok_or_else(|| "--pid requires a process id".to_string())?;
                 parsed.pid = Some(
                     value
-                        .as_ref()
                         .parse()
-                        .map_err(|_| format!("invalid process id: {}", value.as_ref()))?,
+                        .map_err(|_| format!("invalid process id: {value}"))?,
                 );
             }
             "--session" | "-s" => {
                 parsed.session = Some(
                     args.next()
-                        .ok_or_else(|| "--session requires a name".to_string())?
-                        .as_ref()
-                        .to_string(),
+                        .ok_or_else(|| "--session requires a name".to_string())?,
                 );
             }
             "--ssh" => {
                 parsed.ssh_destination = Some(
                     args.next()
-                        .ok_or_else(|| "--ssh requires a destination".to_string())?
-                        .as_ref()
-                        .to_string(),
+                        .ok_or_else(|| "--ssh requires a destination".to_string())?,
                 );
             }
             "--attach" => parsed.attach = true,
@@ -186,10 +230,10 @@ where
                 let value = args
                     .next()
                     .ok_or_else(|| "--size requires a value".to_string())?;
-                parsed.size = Some(parse_size(value.as_ref())?);
+                parsed.size = Some(parse_size(&value)?);
             }
             "--" => {
-                let rest: Vec<String> = args.by_ref().map(|a| a.as_ref().to_string()).collect();
+                let rest: Vec<String> = args.by_ref().collect();
                 if rest.is_empty() {
                     return Err("-- requires a command to launch".to_string());
                 }
@@ -473,6 +517,136 @@ pub fn session_exists(name: &str) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// A screenout-owned tmux session and the active pane an agent should drive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub name: String,
+    pub pane_id: String,
+    pub command: String,
+}
+
+/// The tmux format used to enumerate panes for [`parse_sessions`].
+pub const SESSION_LIST_FORMAT: &str =
+    "#{session_name} #{window_active} #{pane_active} #{pane_id} #{pane_current_command}";
+
+/// Parse `tmux list-panes -a -F SESSION_LIST_FORMAT` output into the screenout
+/// sessions, keeping the active pane of each session's current window.
+pub fn parse_sessions(output: &str) -> Vec<SessionInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 5 {
+                return None;
+            }
+            let name = fields[0];
+            if !name.starts_with("screenout-") {
+                return None;
+            }
+            if fields[1] != "1" || fields[2] != "1" {
+                return None;
+            }
+            Some(SessionInfo {
+                name: name.to_string(),
+                pane_id: fields[3].to_string(),
+                command: fields[4..].join(" "),
+            })
+        })
+        .collect()
+}
+
+/// Best-effort list of active screenout sessions (empty if tmux is not running).
+pub fn list_screenout_sessions() -> Vec<SessionInfo> {
+    match Command::new("tmux")
+        .args(["list-panes", "-a", "-F", SESSION_LIST_FORMAT])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            parse_sessions(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Pick the session to attach to from a requested name (exact or `screenout-`
+/// prefixed) or, when none is given, the sole session.
+pub fn resolve_attach_target(
+    sessions: &[SessionInfo],
+    requested: Option<&str>,
+) -> Result<SessionInfo, String> {
+    match requested {
+        Some(name) => {
+            let prefixed = format!("screenout-{name}");
+            sessions
+                .iter()
+                .find(|session| session.name == name || session.name == prefixed)
+                .cloned()
+                .ok_or_else(|| format!("no screenout session matching '{name}'"))
+        }
+        None => match sessions {
+            [only] => Ok(only.clone()),
+            [] => Err("no screenout sessions found".to_string()),
+            many => {
+                let names: Vec<&str> = many.iter().map(|s| s.name.as_str()).collect();
+                Err(format!(
+                    "multiple screenout sessions: {}; pass a name to attach",
+                    names.join(", ")
+                ))
+            }
+        },
+    }
+}
+
+/// The human attach command for a session.
+pub fn attach_command(session: &str) -> String {
+    shell_words(&CommandStep::new("tmux", ["attach-session", "-t", session]))
+}
+
+/// The two agent-facing commands (capture, send-keys) for a pane.
+pub fn agent_commands(pane_id: &str) -> (String, String) {
+    (
+        format!("tmux capture-pane -p -t {pane_id}"),
+        format!("tmux send-keys -t {pane_id} 'q' Enter"),
+    )
+}
+
+/// Render `screenout list` output.
+pub fn render_session_list(sessions: &[SessionInfo]) -> String {
+    if sessions.is_empty() {
+        return "screenout: no screenout sessions found\n".to_string();
+    }
+    let mut out = String::new();
+    for session in sessions {
+        let (capture, send_keys) = agent_commands(&session.pane_id);
+        out.push_str(&format!(
+            "screenout: session {} (running {})\n\
+             screenout: attach command:\n\
+             {}\n\
+             screenout: agent commands:\n\
+             {}\n\
+             {}\n",
+            session.name,
+            session.command,
+            attach_command(&session.name),
+            capture,
+            send_keys,
+        ));
+    }
+    out
+}
+
+/// Render the handoff text printed before `screenout attach` reattaches.
+pub fn render_attach_info(session: &SessionInfo) -> String {
+    let (capture, send_keys) = agent_commands(&session.pane_id);
+    format!(
+        "screenout: attaching to session {}\n\
+         screenout: agent commands:\n\
+         {}\n\
+         {}\n",
+        session.name, capture, send_keys,
+    )
 }
 
 pub fn read_current_tty_processes(tty: &str) -> Result<Vec<ProcessRow>, PlanError> {

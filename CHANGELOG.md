@@ -23,6 +23,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   new size.
 - **Session-collision guard:** `screenout` stops with a `--session` hint instead
   of failing when the target session name already exists.
+- **`screenout list`** shows active screenout sessions with their attach and
+  agent commands, so a backgrounded session is easy to find later.
+- **`screenout attach [name]`** reattaches to a screenout session (the sole one
+  when unnamed) and reprints its agent commands.
 
 ### Changed
 

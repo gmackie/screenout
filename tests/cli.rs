@@ -1,6 +1,54 @@
-use screenout::{format_success_message, parse_args, parse_size, Plan, TermSize};
+use screenout::{format_success_message, parse_args, parse_size, Plan, Subcommand, TermSize};
 
 use screenout::parse_stty_size;
+
+#[test]
+fn parses_list_subcommand() {
+    assert_eq!(
+        parse_args(["list"]).expect("args").subcommand,
+        Some(Subcommand::List)
+    );
+    assert_eq!(
+        parse_args(["ls"]).expect("args").subcommand,
+        Some(Subcommand::List)
+    );
+}
+
+#[test]
+fn parses_attach_subcommand_with_optional_name() {
+    assert_eq!(
+        parse_args(["attach"]).expect("args").subcommand,
+        Some(Subcommand::Attach(None))
+    );
+    assert_eq!(
+        parse_args(["attach", "build"]).expect("args").subcommand,
+        Some(Subcommand::Attach(Some("build".to_string())))
+    );
+}
+
+#[test]
+fn attach_subcommand_accepts_dry_run() {
+    let args = parse_args(["attach", "build", "--dry-run"]).expect("args");
+    assert_eq!(
+        args.subcommand,
+        Some(Subcommand::Attach(Some("build".to_string())))
+    );
+    assert!(args.dry_run);
+}
+
+#[test]
+fn attach_subcommand_rejects_extra_name() {
+    assert_eq!(
+        parse_args(["attach", "a", "b"]).expect_err("too many"),
+        "attach takes at most one session name"
+    );
+}
+
+#[test]
+fn default_grammar_has_no_subcommand() {
+    assert_eq!(parse_args(["--pid", "42"]).expect("args").subcommand, None);
+    assert_eq!(parse_args(["--", "htop"]).expect("args").subcommand, None);
+}
 
 #[test]
 fn parses_stty_size_lines_then_cols() {

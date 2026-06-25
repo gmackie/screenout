@@ -68,6 +68,26 @@ screenout --pid 4242 --session build
 screenout --pid 4242 --ssh user@example.com
 ```
 
+## Find and rejoin sessions
+
+Backgrounded a tool and want it back from another terminal? List the active
+screenout sessions:
+
+```sh
+screenout list
+```
+
+Each entry shows the session, its attach command, and its agent commands.
+Reattach to one — or to the only session, with no name:
+
+```sh
+screenout attach           # the sole screenout session
+screenout attach htop      # screenout-htop (or an exact session name)
+```
+
+`attach` reprints the agent commands before handing your terminal to tmux, so an
+agent can pick the session up from the same output.
+
 ## Agent handoff
 
 `screenout` always prints an **agent commands** block addressing the tmux pane by
